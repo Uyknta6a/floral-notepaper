@@ -1,0 +1,76 @@
+name: Build Windows Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（例如 1.2.0 或 v1.2.0，留空则使用 tauri.conf.json 默认版本）"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (Latest LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+
+      - name: Setup Rust (Latest Stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Resolve Version
+        shell: pwsh
+        run: |
+          $inputVer = "${{ github.event.inputs.version }}".Trim().TrimStart('v')
+          if ([string]::IsNullOrWhiteSpace($inputVer)) {
+            $conf = Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+            $ver = $conf.version
+          } else {
+            $ver = $inputVer
+            node scripts/set-version.mjs $ver
+          }
+          Write-Host "Building version: $ver"
+          echo "APP_VERSION=$ver" >> $env:GITHUB_ENV
+
+      - name: Build Portable Executable
+        run: npx tauri build --no-bundle
+
+      - name: Collect Artifact
+        shell: pwsh
+        run: |
+          $releaseDir = 'dist-portable'
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+
+          $sourceExe = 'src-tauri/target/release/floral-notepaper.exe'
+          if (-not (Test-Path $sourceExe)) {
+            throw "Build output not found at: $sourceExe"
+          }
+
+          $destName = "floral-notepaper_${env:APP_VERSION}_portable.exe"
+          Copy-Item $sourceExe (Join-Path $releaseDir $destName) -Force
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: floral-notepaper-${{ env:APP_VERSION }}-windows-portable
+          path: dist-portable/*
+          if-no-files-found: error
+          retention-days: 14

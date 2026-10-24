@@ -123,7 +123,7 @@ impl MirrorChyanProvider {
         Self {
             manifest_path: env_manifest_path(MIRROR_CHYAN_MANIFEST_PATH_ENV),
             cdk: None,
-            offline: env::var("FLORAL_NOTEPAPER_UPDATE_OFFLINE").is_ok(),
+            offline: true,
         }
     }
 
@@ -181,7 +181,7 @@ impl GithubProvider {
     pub fn from_env() -> Self {
         Self {
             manifest_path: env_manifest_path(GITHUB_MANIFEST_PATH_ENV),
-            offline: env::var("FLORAL_NOTEPAPER_UPDATE_OFFLINE").is_ok(),
+            offline: true,
         }
     }
 
