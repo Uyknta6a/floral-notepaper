@@ -46,38 +46,88 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # 解析手动输入或自动跟随源码版本
+          # 1. 读取仓库当前 tauri.conf.json 中的版本
+          if (-not (Test-Path -LiteralPath 'src-tauri/tauri.conf.json')) {
+            throw 'src-tauri/tauri.conf.json was not found.'
+          }
+          $conf = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          $repoVer = $conf.version
+
+          # 2. 读取 Cargo.toml 中的当前 package version
+          $cargoVer = $null
+          if (Test-Path -LiteralPath 'src-tauri/Cargo.toml') {
+            $cargoMatch = Select-String -Path 'src-tauri/Cargo.toml' -Pattern '(?m)^version\s*=\s*"([^"]*)"' | Select-Object -First 1
+            if ($cargoMatch) {
+              $cargoVer = $cargoMatch.Matches.Groups[1].Value
+            }
+          }
+
+          # 3. 解析用户输入版本（去掉可能存在的 'v' 前缀）
           $inputVer = "${{ inputs.version }}".Trim()
           if ($inputVer.StartsWith('v', [System.StringComparison]::OrdinalIgnoreCase)) {
             $inputVer = $inputVer.Substring(1).Trim()
           }
 
           if ([string]::IsNullOrWhiteSpace($inputVer)) {
-            if (-not (Test-Path -LiteralPath 'src-tauri/tauri.conf.json')) {
-              throw 'src-tauri/tauri.conf.json was not found.'
-            }
-            $conf = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
-            $ver = $conf.version
+            $ver = $repoVer
+            Write-Host "No version specified; following repository version: $ver"
           } else {
             $ver = $inputVer
+            Write-Host "Target build version: $ver"
           }
 
           if ([string]::IsNullOrWhiteSpace($ver)) {
             throw 'Unable to determine build version.'
           }
 
-          Write-Host "Syncing build version across manifests: $ver"
-          node scripts/set-version.mjs $ver
-          if ($LASTEXITCODE -ne 0) {
-            throw "scripts/set-version.mjs failed with exit code $LASTEXITCODE."
+          # 4. 仅当目标版本与源码版本不一致时才执行同步更新（避免原地替换触发 set-version 报错）
+          if ($ver -ne $repoVer -or $ver -ne $cargoVer) {
+            Write-Host "Version differs from repo manifests ($repoVer / $cargoVer -> $ver), syncing..."
+            $syncSuccess = $false
+
+            if (Test-Path -LiteralPath 'scripts/set-version.mjs') {
+              try {
+                node scripts/set-version.mjs $ver
+                if ($LASTEXITCODE -eq 0) {
+                  $syncSuccess = $true
+                }
+              } catch {
+                Write-Warning "scripts/set-version.mjs failed: $_"
+              }
+            }
+
+            # 兜底：若 set-version.mjs 失败（如 Windows CRLF 导致匹配不上），直接精准更新清单
+            if (-not $syncSuccess) {
+              Write-Host "Applying fallback manifest version update..."
+
+              # 更新 tauri.conf.json
+              $conf.version = $ver
+              $conf | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath 'src-tauri/tauri.conf.json' -Encoding utf8
+
+              # 更新 package.json
+              if (Test-Path -LiteralPath 'package.json') {
+                $pkg = Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json
+                $pkg.version = $ver
+                $pkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath 'package.json' -Encoding utf8
+              }
+
+              # 更新 Cargo.toml（仅替换 [package] 块下的首个 version）
+              if (Test-Path -LiteralPath 'src-tauri/Cargo.toml') {
+                $cargoText = Get-Content -LiteralPath 'src-tauri/Cargo.toml' -Raw
+                $cargoText = [regex]::Replace($cargoText, '(?m)^version\s*=\s*"[^"]*"', "version = `"$ver`"", 1)
+                [System.IO.File]::WriteAllText('src-tauri/Cargo.toml', $cargoText, [System.Text.Encoding]::UTF8)
+              }
+            }
+          } else {
+            Write-Host "Manifests are already at version $ver. Skipping manifest rewrite."
           }
 
-          # 保证输出为 UTF-8 编码，避免 GitHub Actions Runner 解析异常
+          # 5. 安全输出 UTF-8 环境变量供后续步骤使用
           "APP_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build executable without bundling
-        # 采用本地安装的 tauri CLI 并显式传入 --no-sign，与 release.yml 逻辑一致
+        # 与 release.yml 逻辑一致，使用本地安装的 tauri CLI 并显式跳过签名
         run: npm run tauri -- build --no-bundle --no-sign
 
       - name: Collect artifact
@@ -94,7 +144,7 @@ jobs:
             throw "Build output not found at: $sourceExe"
           }
 
-          # 产物命名与 release.yml / build-artifacts.yml 严格对齐 (floral-notepaper_<version>.exe)
+          # 严格对齐 release.yml / build-artifacts.yml 的标准产物命名
           $destName = "floral-notepaper_${ver}.exe"
           Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $releaseDir $destName) -Force
 
