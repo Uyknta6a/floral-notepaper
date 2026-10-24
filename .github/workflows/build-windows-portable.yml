@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（例如 1.2.0 或 v1.2.0，留空则使用 tauri.conf.json 默认版本）"
+        description: "可选版本号（例如 v1.0.3 或 1.0.3），留空则使用源码中的版本"
         required: false
-        default: ""
         type: string
 
 env:
@@ -14,6 +13,7 @@ env:
 
 jobs:
   build-windows:
+    name: Build Windows Portable
     runs-on: windows-latest
     permissions:
       contents: read
@@ -22,58 +22,86 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Setup Node.js (Node 24 LTS)
+      - name: Setup Node.js (Latest LTS)
         uses: actions/setup-node@v5
         with:
-          node-version: "24"
+          node-version: "lts/*"
           cache: npm
 
       - name: Setup Rust (Latest Stable)
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: "src-tauri -> target"
+          cache-workspace-crates: "false"
 
-      - name: Install npm dependencies
+      - name: Install dependencies
         run: npm ci
 
-      - name: Resolve Version
+      - name: Resolve and set version
+        id: version
         shell: pwsh
         run: |
-          $inputVer = "${{ github.event.inputs.version }}".Trim().TrimStart('v')
+          $ErrorActionPreference = 'Stop'
+
+          # 解析手动输入或自动跟随源码版本
+          $inputVer = "${{ inputs.version }}".Trim()
+          if ($inputVer.StartsWith('v', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $inputVer = $inputVer.Substring(1).Trim()
+          }
+
           if ([string]::IsNullOrWhiteSpace($inputVer)) {
-            $conf = Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+            if (-not (Test-Path -LiteralPath 'src-tauri/tauri.conf.json')) {
+              throw 'src-tauri/tauri.conf.json was not found.'
+            }
+            $conf = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
             $ver = $conf.version
           } else {
             $ver = $inputVer
-            node scripts/set-version.mjs $ver
           }
-          Write-Host "Building version: $ver"
-          Add-Content -Path $env:GITHUB_ENV -Value "APP_VERSION=$ver" -Encoding utf8
 
-      - name: Build Portable Executable
-        run: npm run tauri build -- --no-bundle
+          if ([string]::IsNullOrWhiteSpace($ver)) {
+            throw 'Unable to determine build version.'
+          }
 
-      - name: Collect Artifact
+          Write-Host "Syncing build version across manifests: $ver"
+          node scripts/set-version.mjs $ver
+          if ($LASTEXITCODE -ne 0) {
+            throw "scripts/set-version.mjs failed with exit code $LASTEXITCODE."
+          }
+
+          # 保证输出为 UTF-8 编码，避免 GitHub Actions Runner 解析异常
+          "APP_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build executable without bundling
+        # 采用本地安装的 tauri CLI 并显式传入 --no-sign，与 release.yml 逻辑一致
+        run: npm run tauri -- build --no-bundle --no-sign
+
+      - name: Collect artifact
         shell: pwsh
         run: |
-          $releaseDir = 'dist-portable'
+          $ErrorActionPreference = 'Stop'
+
+          $ver = $env:APP_VERSION
+          $releaseDir = 'release-assets'
           New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 
           $sourceExe = 'src-tauri/target/release/floral-notepaper.exe'
-          if (-not (Test-Path $sourceExe)) {
+          if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
             throw "Build output not found at: $sourceExe"
           }
 
-          $destName = "floral-notepaper_${env:APP_VERSION}_portable.exe"
-          Copy-Item $sourceExe (Join-Path $releaseDir $destName) -Force
+          # 产物命名与 release.yml / build-artifacts.yml 严格对齐 (floral-notepaper_<version>.exe)
+          $destName = "floral-notepaper_${ver}.exe"
+          Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $releaseDir $destName) -Force
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v5
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
           name: floral-notepaper-${{ env.APP_VERSION }}-windows-portable
-          path: dist-portable/*
+          path: release-assets/*
           if-no-files-found: error
           retention-days: 14
