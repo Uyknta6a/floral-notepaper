@@ -9,6 +9,9 @@ on:
         default: ""
         type: string
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -17,12 +20,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Setup Node.js (Latest LTS)
-        uses: actions/setup-node@v4
+      - name: Setup Node.js (Node 24 LTS)
+        uses: actions/setup-node@v5
         with:
-          node-version: "lts/*"
+          node-version: "24"
           cache: npm
 
       - name: Setup Rust (Latest Stable)
@@ -51,7 +54,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "APP_VERSION=$ver" -Encoding utf8
 
       - name: Build Portable Executable
-        run: npx tauri build --no-bundle
+        run: npm run tauri build -- --no-bundle
 
       - name: Collect Artifact
         shell: pwsh
@@ -68,7 +71,7 @@ jobs:
           Copy-Item $sourceExe (Join-Path $releaseDir $destName) -Force
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: floral-notepaper-${{ env.APP_VERSION }}-windows-portable
           path: dist-portable/*
