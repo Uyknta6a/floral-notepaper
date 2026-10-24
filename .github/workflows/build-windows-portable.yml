@@ -48,7 +48,7 @@ jobs:
             node scripts/set-version.mjs $ver
           }
           Write-Host "Building version: $ver"
-          echo "APP_VERSION=$ver" >> $env:GITHUB_ENV
+          Add-Content -Path $env:GITHUB_ENV -Value "APP_VERSION=$ver" -Encoding utf8
 
       - name: Build Portable Executable
         run: npx tauri build --no-bundle
@@ -70,7 +70,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: floral-notepaper-${{ env:APP_VERSION }}-windows-portable
+          name: floral-notepaper-${{ env.APP_VERSION }}-windows-portable
           path: dist-portable/*
           if-no-files-found: error
           retention-days: 14
