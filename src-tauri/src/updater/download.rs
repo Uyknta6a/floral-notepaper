@@ -112,6 +112,7 @@ impl UpdateDownloadService {
     where
         F: FnMut(UpdateDownloadProgressDto),
     {
+        return Err(errors::app_error("updateDownloadOffline", "当前处于离线测试模式，禁止联网下载"));
         debug_log!("开始下载 version={:?}", current_state.latest_version);
         if let Err(error) = self.current_platform().ensure_in_app_updates_supported() {
             debug_log!("平台不支持下载 code={}", error.code);
